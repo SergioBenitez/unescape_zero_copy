@@ -1,0 +1,19 @@
+[package]
+name = "unescape_zero_copy"
+version = "1.0.0"
+edition = "2021"
+description = "Unescape strings without allocating memory"
+license = "MIT"
+readme = "README.md"
+authors = ["Ben Kelley"]
+repository = "https://github.com/MWPuppire/unescape_zero_copy"
+homepage = "https://crates.io/crates/unescape_zero_copy"
+keywords = [
+	"escape",
+	"string",
+	"unescape",
+]
+
+[features]
+default = ["std"]
+std = []
