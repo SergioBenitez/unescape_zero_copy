@@ -1,6 +1,6 @@
 [package]
 name = "unescape_zero_copy"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Unescape strings without allocating memory"
 license = "MIT"
@@ -17,3 +17,7 @@ keywords = [
 [features]
 default = ["std"]
 std = []
+
+[dev-dependencies]
+quickcheck = "1.0.3"
+quickcheck_macros = "1.0.0"

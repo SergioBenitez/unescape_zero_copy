@@ -26,7 +26,7 @@ use core::fmt;
 use core::num::ParseIntError;
 
 /// Errors which may be returned by the unescaper.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     /// Error type for a string ending in a backslash without a following escape
     /// sequence.
@@ -179,7 +179,10 @@ impl<'a> Iterator for Unescaped<'a> {
                 match self.split.next() {
                     None => Some(Err(Error::IncompleteSequence)),
                     Some("") => Some(Ok('\\')),
-                    Some(s) => Some(self.next_escape_sequence(s)),
+                    Some(s) => {
+                        self.rem = Some(s.chars());
+                        Some(Ok('\\'))
+                    }
                 }
             } else {
                 Some(self.next_escape_sequence(next))
@@ -204,3 +207,50 @@ pub fn unescape(s: &str) -> Result<std::borrow::Cow<str>, Error> {
     }
     Ok(out)
 }
+
+#[cfg(all(test, feature = "std"))]
+mod test {
+    use quickcheck::TestResult;
+    use quickcheck_macros::quickcheck;
+    use super::*;
+    use std::borrow::Cow;
+
+    #[test]
+    fn borrow_strings_without_escapes() {
+        assert!(matches!(unescape("hello").unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(unescape("longer\nstring").unwrap(), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn unescapes_backslashes() {
+        assert_eq!(unescape(r"\\").unwrap(), "\\");
+        assert_eq!(unescape(r"\\\\").unwrap(), "\\\\");
+        assert_eq!(unescape(r"\\\\\\").unwrap(), "\\\\\\");
+        assert_eq!(unescape(r"\\a").unwrap(), "\\a");
+        assert_eq!(unescape(r"\\\"), Err(Error::IncompleteSequence));
+    }
+
+    #[test]
+    fn unicode_escapes() {
+        assert_eq!(unescape(r"\u1234").unwrap(), "\u{1234}");
+        assert_eq!(unescape(r"\u{1234}").unwrap(), "\u{1234}");
+        assert_eq!(unescape(r"\U0010FFFF").unwrap(), "\u{10FFFF}");
+        assert_eq!(unescape(r"\x20").unwrap(), " ");
+    }
+
+    #[quickcheck]
+    fn inverts_escape_default(s: String) -> TestResult {
+        let escaped: String = s.escape_default().collect();
+        if escaped == s {
+            // only bother testing strings that need escaped
+            return TestResult::discard();
+        }
+        let unescaped = unescape(&escaped);
+        match unescaped {
+            Ok(unescaped) => TestResult::from_bool(s == unescaped),
+            Err(e) => TestResult::error(e.to_string()),
+        }
+    }
+}
+#[cfg(all(test, not(feature = "std")))]
+compile_error!("Tests currently require `std` feature");
