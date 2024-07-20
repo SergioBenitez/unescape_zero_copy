@@ -11,9 +11,6 @@ unescaping and so can be returned as-is. This library does that.
 Supports `no_std` by returning an iterator, or can return a `Cow` that allocates
 as needed with the `std` feature (enabled by default).
 
-No automated tests yet cause I'm lazy, but it has been manually tested for many
-cases.
-
 ## Usage
 
 ```rust

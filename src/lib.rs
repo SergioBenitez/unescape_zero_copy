@@ -25,6 +25,11 @@
 use core::fmt;
 use core::num::ParseIntError;
 
+#[cfg(feature = "std")]
+use std::borrow::Cow;
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+use alloc::borrow::Cow;
+
 /// Errors which may be returned by the unescaper.
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -195,9 +200,9 @@ impl<'a> core::iter::FusedIterator for Unescaped<'a> {}
 /// Unescape the string into a [`std::borrow::Cow`] string which only allocates
 /// if any escape sequences were found; otherwise, the original string is
 /// returned unchanged.
-#[cfg(feature = "std")]
-pub fn unescape(s: &str) -> Result<std::borrow::Cow<str>, Error> {
-    let mut out = std::borrow::Cow::default();
+#[cfg(any(feature = "std", feature = "alloc"))]
+pub fn unescape(s: &str) -> Result<Cow<str>, Error> {
+    let mut out = Cow::default();
     let mut unescaped = Unescaped::new(s);
     while let Some(fragment) = unescaped.next_fragment().transpose()? {
         match fragment {
