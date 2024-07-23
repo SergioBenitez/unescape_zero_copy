@@ -129,6 +129,7 @@ fn escape_sequence(s: &str) -> Result<(char, &str), Error> {
 }
 
 /// An iterator producing unescaped characters of a string.
+#[derive(Clone, Debug)]
 pub struct Unescaped<'a> {
     split: core::str::Split<'a, char>,
     rem: Option<core::str::Chars<'a>>,
