@@ -5,11 +5,11 @@
 
 Unescapes strings with C-style escape sequences, written to minimize memory
 copying. Other crates (e.g. [`unescaper`](https://crates.io/crates/unescaper))
-like to allocate every for every string, but most strings don't need any
+like to allocate memory for every string, but most strings don't need any
 unescaping and so can be returned as-is. This library does that.
 
 Supports `no_std` by returning an iterator, or can return a `Cow` that allocates
-as needed with the `std` feature (enabled by default).
+as needed with the `std` or `alloc` feature (`std` is enabled by default).
 
 ## Usage
 
