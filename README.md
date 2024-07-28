@@ -10,8 +10,8 @@ unescaping and so can be returned as-is. This library does that.
 
 It supports custom escape sequence parsers intead of the standard C-style escape
 sequences as well; an example of this can be found in
-[`examples/lua_escapes.rs`](examples/lua_escapes.rs), using the library to parse
-Lua escape sequences.
+[`tests/lua_escapes.rs`](tests/lua_escapes.rs), using the library to parse Lua
+escape sequences.
 
 Supports `no_std` by returning an iterator, or can return a `Cow` that allocates
 as needed with the `std` or `alloc` feature (`std` is enabled by default).
