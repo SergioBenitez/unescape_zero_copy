@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 //! Small library to unescape strings, without needing to allocate for strings
 //! without escape sequences. Tries to support a variety of languages, including
@@ -167,23 +168,17 @@ pub fn default_escape_sequence(s: &str) -> Result<(char, &str), Error> {
 
 #[inline]
 fn split_at_escape(s: &str) -> (Option<&str>, Option<&str>) {
-    if s.is_empty() {
-        return (None, None);
-    }
-    match s.find('\\') {
-        Some(idx) => unsafe {
-            // SAFETY: `find` returns a valid byte index, and the backslash is
-            // one byte, so `idx + 1` is still a valid byte index
-            if idx == 0 {
-                (None, Some(s.get_unchecked(1..)))
-            } else {
-                (
-                    Some(s.get_unchecked(..idx)),
-                    Some(s.get_unchecked((idx + 1)..)),
-                )
-            }
-        },
-        None => (Some(s), None),
+    if let Some((first, last)) = s.split_once('\\') {
+        (
+            if first.is_empty() { None } else { Some(first) },
+            // make sure this one is non-`None` to correctly error on incomplete
+            // escape sequences (i.e. strings ending in an unescaped backslash)
+            Some(last),
+        )
+    } else if s.is_empty() {
+        (None, None)
+    } else {
+        (Some(s), None)
     }
 }
 

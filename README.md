@@ -19,7 +19,7 @@ as needed with the `std` or `alloc` feature (`std` is enabled by default).
 ## Usage
 
 ```rust
-assert_eq!(unescape_zero_copy::unescape(r"Hello\x0aworld").unwrap(), "Hello\nworld");
+assert_eq!(unescape_zero_copy::unescape_default(r"Hello\x0aworld").unwrap(), "Hello\nworld");
 ```
 
 ## License
