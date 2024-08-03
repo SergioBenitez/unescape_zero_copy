@@ -5,24 +5,6 @@
 //! without escape sequences. Tries to support a variety of languages, including
 //! through custom parsers if needed, though it mainly supports C-style escape
 //! escape sequences by default.
-//!
-//! Escape sequences supported by default:
-//! * `\a` to a bell character.
-//! * `\b` to a backspace.
-//! * `\f` to a form feed.
-//! * `\n` to a line feed.
-//! * `\t` to a (horizontal) tab.
-//! * `\v` to a vertical tab.
-//! * `\\` to a backslash.
-//! * `\'` to a single quote.
-//! * `\"` to a double quote.
-//! * `\/` to a slash (unescaped per ECMAScript).
-//! * `\` followed by a new line keeps the same new line.
-//! * `\xNN` to the Unicode character in the two hex digits.
-//! * `\uNNNN` as above, but with four hex digits.
-//! * `\UNNNNNNNN` as above, but with eight hex digits.
-//! * `\u{NN...}` as above, but with variable hex digits.
-//! * octal sequences are decoded to the Unicode character.
 
 use core::fmt;
 use core::num::ParseIntError;
@@ -50,6 +32,7 @@ pub enum Error {
 }
 
 impl From<ParseIntError> for Error {
+    #[inline]
     fn from(this: ParseIntError) -> Self {
         Error::ParseIntError(this)
     }
@@ -70,19 +53,46 @@ impl fmt::Display for Error {
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
-/// A fragment of a string, either an escaped character or the largest string
-/// slice before the next escape sequence.
+/// A fragment of an unescaped string.
+///
+/// This is either the largest string slice between escape sequences or the
+/// result of parsing an escape sequence.
 pub enum StringFragment<'a> {
     /// A string slice between escape sequences.
     Raw(&'a str),
     /// An unescaped character from an escape sequence.
     Escaped(char),
     /// An escape sequence that produced no character.
+    ///
     /// None of the default escape sequences do this, but some languages (e.g.
-    /// Lua) have an escape sequence that trims out whitespace.
+    /// Lua) have an escape sequence that trims out whitespace or otherwise
+    /// doesn't produce a visible character.
     Empty,
 }
 
+impl From<char> for StringFragment<'_> {
+    #[inline]
+    fn from(this: char) -> Self {
+        Self::Escaped(this)
+    }
+}
+impl From<Option<char>> for StringFragment<'_> {
+    #[inline]
+    fn from(this: Option<char>) -> Self {
+        match this {
+            Some(ch) => Self::Escaped(ch),
+            None => Self::Empty,
+        }
+    }
+}
+impl<'a> From<&'a str> for StringFragment<'a> {
+    #[inline]
+    fn from(this: &'a str) -> Self {
+        Self::Raw(this)
+    }
+}
+
+#[inline]
 fn unicode_char(s: &str, chars: usize) -> Result<(char, &str), Error> {
     if s.len() < chars {
         Err(Error::IncompleteUnicode)
@@ -93,8 +103,29 @@ fn unicode_char(s: &str, chars: usize) -> Result<(char, &str), Error> {
     }
 }
 
-// called after encountering the backslash
-fn escape_sequence(s: &str) -> Result<(char, &str), Error> {
+/// The default unescaper, focusing on C-style escape sequences.
+///
+/// Called after a backslash is found. Returns a tuple of the unescaped
+/// character and remaining (unconsumed) input.
+///
+/// Escape sequences supported:
+/// * `\a` to a bell character.
+/// * `\b` to a backspace.
+/// * `\f` to a form feed.
+/// * `\n` to a line feed.
+/// * `\t` to a (horizontal) tab.
+/// * `\v` to a vertical tab.
+/// * `\\` to a backslash.
+/// * `\'` to a single quote.
+/// * `\"` to a double quote.
+/// * `\/` to a slash (unescaped per ECMAScript).
+/// * `\` followed by a new line keeps the same new line.
+/// * `\xNN` to the Unicode character in the two hex digits.
+/// * `\uNNNN` as above, but with four hex digits.
+/// * `\UNNNNNNNN` as above, but with eight hex digits.
+/// * `\u{NN...}` as above, but with variable hex digits.
+/// * octal sequences are decoded to the Unicode character.
+pub fn default_escape_sequence(s: &str) -> Result<(char, &str), Error> {
     let mut chars = s.chars();
     let next = chars.next().ok_or(Error::IncompleteSequence)?;
     match next {
@@ -134,79 +165,153 @@ fn escape_sequence(s: &str) -> Result<(char, &str), Error> {
     }
 }
 
-/// An iterator producing unescaped characters of a string.
-#[derive(Clone, Debug)]
-pub struct UnescapeDefault<'a> {
-    split: core::str::Split<'a, char>,
-    rem: Option<core::str::Chars<'a>>,
+#[inline]
+fn split_at_escape(s: &str) -> (Option<&str>, Option<&str>) {
+    if s.is_empty() {
+        return (None, None);
+    }
+    match s.find('\\') {
+        Some(idx) => unsafe {
+            // SAFETY: `find` returns a valid byte index, and the backslash is
+            // one byte, so `idx + 1` is still a valid byte index
+            if idx == 0 {
+                (None, Some(s.get_unchecked(1..)))
+            } else {
+                (
+                    Some(s.get_unchecked(..idx)),
+                    Some(s.get_unchecked((idx + 1)..)),
+                )
+            }
+        },
+        None => (Some(s), None),
+    }
 }
 
-impl<'a> UnescapeDefault<'a> {
-    /// Make a new unescaper over the given string.
-    pub fn new(from: &'a str) -> Self {
-        let mut split = from.split('\\');
-        let rem = split
-            .next()
-            .and_then(|s| if s.is_empty() { None } else { Some(s.chars()) });
-        Self { split, rem }
+/// An iterator producing unescaped characters of a string.
+///
+/// The escape sequences are parsed according to the function provided at the
+/// unescaper's creation.
+#[derive(Clone, Debug)]
+// default type for backwards compatibility
+pub struct Unescape<'a, F, E, C = Option<char>>
+where
+    F: FnMut(&'a str) -> Result<(C, &'a str), E>,
+    C: From<char>,
+    StringFragment<'a>: From<C>,
+{
+    bare: Option<&'a str>,
+    escaped: Option<&'a str>,
+    escape_sequence: F,
+}
+
+impl<'a, F, E, C> Unescape<'a, F, E, C>
+where
+    F: FnMut(&'a str) -> Result<(C, &'a str), E>,
+    C: From<char>,
+    StringFragment<'a>: From<C>,
+{
+    /// Make a new unescaper over the given string using the given escape
+    /// sequence parser.
+    ///
+    /// The escape sequence parser is called _after_ a backslash has been found,
+    /// and shouldn't check for the presence of one. The tuple in the `Result`
+    /// should contain the character returned and the remaining portion of the
+    /// string after parsing; e.g. a string `"\nabc"` should return
+    /// `('\n', "abc")`.
+    #[inline]
+    pub fn new(escape_sequence: F, from: &'a str) -> Self {
+        let (bare, escaped) = split_at_escape(from);
+        Self {
+            bare,
+            escaped,
+            escape_sequence,
+        }
     }
 
     /// Get the next string fragment rather than just the next character.
+    ///
     /// Advances the iterator accordingly.
-    pub fn next_fragment(&mut self) -> Option<Result<StringFragment<'a>, Error>> {
-        if let Some(rem) = self.rem.take() {
-            let s = rem.as_str();
-            Some(Ok(StringFragment::Raw(s)))
+    #[inline]
+    pub fn next_fragment(&mut self) -> Option<Result<StringFragment<'a>, E>> {
+        if let Some(rem) = self.bare.take() {
+            Some(Ok(StringFragment::Raw(rem)))
         } else {
-            self.next().map(|opt| opt.map(StringFragment::Escaped))
+            self.next().map(|opt| opt.map(StringFragment::from))
         }
     }
 }
 
-impl<'a> Iterator for UnescapeDefault<'a> {
-    type Item = Result<char, Error>;
+impl<'a, F, E, C> Iterator for Unescape<'a, F, E, C>
+where
+    F: FnMut(&'a str) -> Result<(C, &'a str), E>,
+    C: From<char>,
+    StringFragment<'a>: From<C>,
+{
+    type Item = Result<C, E>;
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(ref mut rem) = self.rem {
-            if let Some(next) = rem.next() {
-                Some(Ok(next))
-            } else {
-                self.rem = None;
-                self.next()
-            }
-        } else {
-            let next = self.split.next()?;
-            if next.is_empty() {
-                match self.split.next() {
-                    None => Some(Err(Error::IncompleteSequence)),
-                    Some("") => Some(Ok('\\')),
-                    Some(s) => {
-                        self.rem = Some(s.chars());
-                        Some(Ok('\\'))
-                    }
-                }
-            } else {
-                Some(match escape_sequence(next) {
-                    Ok((ch, rem)) => {
-                        if !rem.is_empty() {
-                            self.rem = Some(rem.chars());
+        self.bare
+            .as_mut()
+            .and_then(|bare| {
+                let mut chars = bare.chars();
+                let ch = chars.next()?;
+                *bare = chars.as_str();
+                Some(Ok(C::from(ch)))
+            })
+            .or_else(|| {
+                if let Some(s) = self.escaped.take() {
+                    Some(match (self.escape_sequence)(s) {
+                        Ok((ch, rem)) => {
+                            let (bare, escaped) = split_at_escape(rem);
+                            self.bare = bare;
+                            self.escaped = escaped;
+                            Ok(ch)
                         }
-                        Ok(ch)
-                    }
-                    Err(e) => Err(e),
-                })
-            }
-        }
+                        Err(e) => {
+                            // assume the error will be reproducible (the escape
+                            // sequence parsers should be deterministic), and any
+                            // state advancement from here would be invalid anyway,
+                            // so abort the unescaper
+                            self.bare = None;
+                            self.escaped = None;
+                            Err(e)
+                        }
+                    })
+                } else {
+                    // in case it was empty but not `None`
+                    self.bare = None;
+                    None
+                }
+            })
     }
 }
-impl<'a> core::iter::FusedIterator for UnescapeDefault<'a> {}
+impl<'a, F, E, C> core::iter::FusedIterator for Unescape<'a, F, E, C>
+where
+    F: FnMut(&'a str) -> Result<(C, &'a str), E>,
+    C: From<char>,
+    StringFragment<'a>: From<C>,
+{
+}
 
-/// Unescape the string into a [`std::borrow::Cow`] string which only allocates
-/// if any escape sequences were found; otherwise, the original string is
-/// returned unchanged.
+// type alias for backwards compatibility
+/// An iterator producing unescaped characters of a string.
+pub type UnescapeDefault<'a> =
+    Unescape<'a, fn(&'a str) -> Result<(char, &'a str), Error>, Error, char>;
+
+/// Unescape the string into a [`std::borrow::Cow`] string.
+///
+/// The function only allocates if any escape sequences were found; otherwise,
+/// the original string is returned unchanged.
+/// More information on the escape sequence parser which is provided here can
+/// be found at [`Unescape::new`].
 #[cfg(any(feature = "std", feature = "alloc"))]
-pub fn unescape_default(s: &str) -> Result<Cow<str>, Error> {
+pub fn unescape<'a, F, E, C>(escape_sequence: F, s: &'a str) -> Result<Cow<'a, str>, E>
+where
+    F: FnMut(&'a str) -> Result<(C, &'a str), E>,
+    C: From<char>,
+    StringFragment<'a>: From<C>,
+{
     let mut out = Cow::default();
-    let mut unescaped = UnescapeDefault::new(s);
+    let mut unescaped = Unescape::new(escape_sequence, s);
     while let Some(fragment) = unescaped.next_fragment().transpose()? {
         match fragment {
             StringFragment::Raw(s) => out += s,
@@ -217,115 +322,15 @@ pub fn unescape_default(s: &str) -> Result<Cow<str>, Error> {
     Ok(out)
 }
 
-/// An unescaper using a custom escape sequence method instead of the default.
-/// Otherwise functions the same as [`UnescapeDefault`].
-#[derive(Clone, Debug)]
-pub struct Unescape<'a, F: FnMut(&str) -> Result<(Option<char>, &str), E>, E: From<Error>> {
-    split: core::str::Split<'a, char>,
-    rem: Option<core::str::Chars<'a>>,
-    escape_sequence: F,
-}
-
-impl<'a, F: FnMut(&str) -> Result<(Option<char>, &str), E>, E: From<Error>> Unescape<'a, F, E> {
-    /// Make a new unescaper over the given string, using the given escape
-    /// sequence function rather than the default one.
-    ///
-    /// The escape sequence parser is called _after_ a backslash has been found,
-    /// and shouldn't check for the presence of one. The tuple in the `Result`
-    /// should contain the character returned (or `None` if the sequence
-    /// produces no character) and the remaining portion of the string after
-    /// parsing; e.g. a string `"\nabc"` should return `('\n', "abc")`.
-    pub fn new(escape_sequence: F, from: &'a str) -> Self {
-        let mut split = from.split('\\');
-        let rem = split
-            .next()
-            .and_then(|s| if s.is_empty() { None } else { Some(s.chars()) });
-        Self {
-            split,
-            rem,
-            escape_sequence,
-        }
-    }
-
-    /// Get the next string fragment rather than just the next character.
-    /// Advances the iterator accordingly.
-    pub fn next_fragment(&mut self) -> Option<Result<StringFragment<'a>, E>> {
-        if let Some(rem) = self.rem.take() {
-            let s = rem.as_str();
-            Some(Ok(StringFragment::Raw(s)))
-        } else {
-            self.next().map(|opt| {
-                opt.map(|ch| {
-                    if let Some(ch) = ch {
-                        StringFragment::Escaped(ch)
-                    } else {
-                        StringFragment::Empty
-                    }
-                })
-            })
-        }
-    }
-}
-
-impl<'a, F: FnMut(&str) -> Result<(Option<char>, &str), E>, E: From<Error>> Iterator
-    for Unescape<'a, F, E>
-{
-    type Item = Result<Option<char>, E>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(ref mut rem) = self.rem {
-            if let Some(next) = rem.next() {
-                Some(Ok(Some(next)))
-            } else {
-                self.rem = None;
-                self.next()
-            }
-        } else {
-            let next = self.split.next()?;
-            if next.is_empty() {
-                Some(if let Some(s) = self.split.next() {
-                    match (self.escape_sequence)("\\") {
-                        Ok((ch, _)) => {
-                            if !s.is_empty() {
-                                self.rem = Some(s.chars());
-                            }
-                            Ok(ch)
-                        }
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    Err(E::from(Error::IncompleteSequence))
-                })
-            } else {
-                Some(match (self.escape_sequence)(next) {
-                    Ok((ch, rem)) => {
-                        if !rem.is_empty() {
-                            self.rem = Some(rem.chars());
-                        }
-                        Ok(ch)
-                    }
-                    Err(e) => Err(e),
-                })
-            }
-        }
-    }
-}
-impl<'a, F: FnMut(&str) -> Result<(Option<char>, &str), E>, E: From<Error>>
-    core::iter::FusedIterator for Unescape<'a, F, E>
-{
-}
-
-/// Unescape the string like [`unescape_default`], but with a custom escape
-/// sequence parser.
+/// Unescapes the string as [`unescape`] using the default escape sequence
+/// parser.
 ///
-/// The escape sequence parser is used instead of the default escape sequences.
-/// More information on the parser can be found at [`Unescape::new`].
+/// See [`default_escape_sequence`] for a list of the supported escape
+/// sequences.
 #[cfg(any(feature = "std", feature = "alloc"))]
-pub fn unescape<F: FnMut(&str) -> Result<(Option<char>, &str), E>, E: From<Error>>(
-    escape_sequence: F,
-    s: &str,
-) -> Result<Cow<str>, E> {
+pub fn unescape_default(s: &str) -> Result<Cow<str>, Error> {
     let mut out = Cow::default();
-    let mut unescaped = Unescape::new(escape_sequence, s);
+    let mut unescaped = UnescapeDefault::new(default_escape_sequence, s);
     while let Some(fragment) = unescaped.next_fragment().transpose()? {
         match fragment {
             StringFragment::Raw(s) => out += s,
@@ -361,7 +366,10 @@ mod test {
         assert_eq!(unescape_default(r"\\\\").unwrap(), "\\\\");
         assert_eq!(unescape_default(r"\\\\\\").unwrap(), "\\\\\\");
         assert_eq!(unescape_default(r"\\a").unwrap(), "\\a");
-        assert_eq!(unescape_default(r"\\\"), Err(Error::IncompleteSequence));
+        assert!(matches!(
+            unescape_default(r"\\\"),
+            Err(Error::IncompleteSequence)
+        ));
     }
 
     #[test]
@@ -373,6 +381,7 @@ mod test {
     }
 
     #[quickcheck]
+    #[cfg_attr(miri, ignore = "slow to run under Miri")]
     fn inverts_escape_default(s: String) -> TestResult {
         let escaped: String = s.escape_default().collect();
         if escaped == s {

@@ -64,4 +64,5 @@ fn lua_escapes() {
     assert_eq!(s2, s3);
     assert_eq!(unescape(lua_escape_sequence, r"\z   a").unwrap(), "a");
     assert_eq!(unescape(lua_escape_sequence, r"\za").unwrap(), "a");
+    assert_eq!(unescape(lua_escape_sequence, r"a\\b").unwrap(), "a\\b");
 }
